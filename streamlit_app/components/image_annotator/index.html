@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Streamlit Interactive Parking Canvas Annotator</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: transparent;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            padding: 2px 0 10px 0;
+        }
+        .canvas-container {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+            max-width: 100%;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+            cursor: crosshair;
+            background: #0f172a;
+        }
+        #annotator-canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .status-overlay {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            background: rgba(15, 23, 42, 0.88);
+            backdrop-filter: blur(6px);
+            color: #f8fafc;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            pointer-events: none;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            z-index: 10;
+        }
+        .badge {
+            background: #2563eb;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 13px;
+        }
+        .badge-progress {
+            background: #d97706;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 13px;
+        }
+        .hint-text {
+            color: #cbd5e1;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="canvas-container" id="container">
+        <canvas id="annotator-canvas"></canvas>
+        <div class="status-overlay" id="status-bar">
+            <span>Current Space: <strong id="cur-space" class="badge">P1</strong></span>
+            <span>Points: <strong id="cur-points" class="badge-progress">0 / 4</strong></span>
+            <span class="hint-text">👈 Click 4 corners on image to mark space</span>
+        </div>
+    </div>
+
+    <script>
+        let img = new Image();
+        let imageLoaded = false;
+        let origWidth = 1280;
+        let origHeight = 720;
+        let completedSpaces = [];
+        let currentPoints = [];
+        let currentSpaceId = "P1";
+
+        const canvas = document.getElementById("annotator-canvas");
+        const ctx = canvas.getContext("2d");
+        const container = document.getElementById("container");
+        const curSpaceEl = document.getElementById("cur-space");
+        const curPointsEl = document.getElementById("cur-points");
+
+        // Send message adhering to Streamlit custom component protocol
+        function sendToStreamlit(type, data = {}) {
+            window.parent.postMessage({
+                isStreamlitMessage: true,
+                type: type,
+                ...data
+            }, "*");
+        }
+
+        function setFrameHeight() {
+            setTimeout(() => {
+                const height = document.body.scrollHeight || container.offsetHeight || canvas.offsetHeight || 500;
+                sendToStreamlit("streamlit:setFrameHeight", { height: Math.max(height + 15, 200) });
+            }, 50);
+        }
+
+        function draw() {
+            if (!imageLoaded) return;
+
+            // Maintain canvas pixel buffer matching the original image dimensions for sharp rendering
+            canvas.width = origWidth;
+            canvas.height = origHeight;
+
+            // 1. Draw base reference image
+            ctx.clearRect(0, 0, origWidth, origHeight);
+            ctx.drawImage(img, 0, 0, origWidth, origHeight);
+
+            // 2. Draw completed parking spaces
+            completedSpaces.forEach(space => {
+                const pts = space.polygon;
+                if (!pts || pts.length < 3) return;
+
+                // Translucent fill
+                ctx.beginPath();
+                ctx.moveTo(pts[0][0], pts[0][1]);
+                for (let i = 1; i < pts.length; i++) {
+                    ctx.lineTo(pts[i][0], pts[i][1]);
+                }
+                ctx.closePath();
+                ctx.fillStyle = "rgba(34, 197, 94, 0.22)";
+                ctx.fill();
+
+                // Solid green boundary
+                ctx.lineWidth = Math.max(2, Math.round(origWidth / 450));
+                ctx.strokeStyle = "#22c55e";
+                ctx.stroke();
+
+                // Centroid for Space ID badge
+                let cX = 0, cY = 0;
+                pts.forEach(p => { cX += p[0]; cY += p[1]; });
+                cX = Math.round(cX / pts.length);
+                cY = Math.round(cY / pts.length);
+
+                const label = space.space_id || space.id || "P";
+                const fontSize = Math.max(14, Math.round(origWidth / 55));
+                ctx.font = `bold ${fontSize}px sans-serif`;
+                const tw = ctx.measureText(label).width;
+                const padX = fontSize * 0.4;
+                const padY = fontSize * 0.3;
+
+                ctx.fillStyle = "rgba(15, 23, 42, 0.88)";
+                ctx.fillRect(cX - tw/2 - padX, cY - fontSize/2 - padY, tw + padX*2, fontSize + padY*2);
+
+                ctx.fillStyle = "#facc15"; // Yellow
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText(label, cX, cY);
+            });
+
+            // 3. Draw in-progress points and connecting lines
+            if (currentPoints.length > 0) {
+                // Lines between points
+                ctx.beginPath();
+                ctx.moveTo(currentPoints[0][0], currentPoints[0][1]);
+                for (let i = 1; i < currentPoints.length; i++) {
+                    ctx.lineTo(currentPoints[i][0], currentPoints[i][1]);
+                }
+                ctx.lineWidth = Math.max(2, Math.round(origWidth / 400));
+                ctx.strokeStyle = "#f59e0b"; // Orange / amber
+                ctx.stroke();
+
+                // Point markers with numbered badge (1, 2, 3, 4)
+                const radius = Math.max(7, Math.round(origWidth / 110));
+                currentPoints.forEach((pt, index) => {
+                    const ptNum = index + 1;
+
+                    // Outer halo
+                    ctx.beginPath();
+                    ctx.arc(pt[0], pt[1], radius + 4, 0, Math.PI * 2);
+                    ctx.fillStyle = "rgba(239, 68, 68, 0.4)";
+                    ctx.fill();
+
+                    // Point circle
+                    ctx.beginPath();
+                    ctx.arc(pt[0], pt[1], radius, 0, Math.PI * 2);
+                    ctx.fillStyle = "#ef4444"; // Red
+                    ctx.fill();
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = "#ffffff";
+                    ctx.stroke();
+
+                    // Point number inside circle
+                    const ptFontSize = Math.max(10, Math.round(radius * 1.15));
+                    ctx.font = `bold ${ptFontSize}px sans-serif`;
+                    ctx.fillStyle = "#ffffff";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(ptNum.toString(), pt[0], pt[1]);
+                });
+            }
+
+            // Update status overlay text
+            curSpaceEl.innerText = currentSpaceId;
+            curPointsEl.innerText = `${currentPoints.length} / 4`;
+            setFrameHeight();
+        }
+
+        // Handle click on canvas and accurately map display coordinates back to original image coordinates
+        canvas.addEventListener("click", function(event) {
+            if (!imageLoaded) return;
+
+            const rect = canvas.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+
+            const scaleX = origWidth / rect.width;
+            const scaleY = origHeight / rect.height;
+
+            const displayX = event.clientX - rect.left;
+            const displayY = event.clientY - rect.top;
+
+            const clickX = Math.round(Math.max(0, Math.min(origWidth, displayX * scaleX)));
+            const clickY = Math.round(Math.max(0, Math.min(origHeight, displayY * scaleY)));
+
+            // Dispatch click value to Streamlit
+            sendToStreamlit("streamlit:setComponentValue", {
+                value: {
+                    x: clickX,
+                    y: clickY,
+                    click_id: Date.now() + Math.random()
+                }
+            });
+        });
+
+        // Window resize handler
+        window.addEventListener("resize", function() {
+            setFrameHeight();
+        });
+
+        // Listen for Streamlit render events
+        window.addEventListener("message", function(event) {
+            if (!event.data) return;
+            if (event.data.type === "streamlit:render") {
+                const args = event.data.args;
+                if (!args) return;
+
+                origWidth = args.orig_width || 1280;
+                origHeight = args.orig_height || 720;
+                completedSpaces = args.spaces || [];
+                currentPoints = args.current_points || [];
+                currentSpaceId = args.current_space_id || `P${completedSpaces.length + 1}`;
+
+                if (args.image_data) {
+                    if (img.src !== args.image_data) {
+                        imageLoaded = false;
+                        img.onload = function() {
+                            imageLoaded = true;
+                            draw();
+                            setFrameHeight();
+                        };
+                        img.src = args.image_data;
+                    } else {
+                        draw();
+                    }
+                } else {
+                    draw();
+                }
+            }
+        });
+
+        // Notify Streamlit that component is ready immediately
+        sendToStreamlit("streamlit:componentReady", { apiVersion: 1 });
+        setFrameHeight();
+    </script>
+</body>
+</html>

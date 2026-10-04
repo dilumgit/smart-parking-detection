@@ -1,0 +1,43 @@
+# Python Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment Variables
+.env
+.env.local
+
+# Outputs & Test data
+outputs/*
+!outputs/.gitkeep
+data/images/*
+!data/images/.gitkeep
+!data/images/*.jpg
+!data/images/*.jpeg
+!data/images/*.png
+data/videos/*
+!data/videos/.gitkeep
+
+# Model weights
+# Ignore temporary/custom checkpoint weights; retain default lightweight yolo11n.pt (~5.35 MB)
+*.pt
+!yolo11n.pt
+
+
+# IDE & OS specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
